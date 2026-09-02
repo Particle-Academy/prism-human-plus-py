@@ -78,7 +78,7 @@ def case_of(case_id: str) -> dict[str, Any]:
 
 
 def test_is_the_whole_suite_not_a_subset_someone_trimmed_to_green() -> None:
-    assert len(CORPUS["cases"]) == 25
+    assert len(CORPUS["cases"]) == 32
 
 
 def test_decides_every_case_the_way_the_corpus_recorded() -> None:
@@ -147,6 +147,40 @@ def test_still_admits_the_names_that_merely_look_like_a_reserved_verb() -> None:
     over-reach: ``confirmation_status`` and ``preconfirm`` stay callable.
     """
     for case_id in ("adm-0009", "adm-0010"):
+        entry = case_of(case_id)
+
+        assert decide(entry)["admitted"] is True, case_id
+        assert entry["admission"]["php"]["admitted"] is True, case_id
+        assert entry["admission"]["ts"]["admitted"] is True, case_id
+
+
+def test_refuses_a_name_that_is_not_well_formed_in_all_three_languages() -> None:
+    """The name rule, and the reason it exists beyond tidiness.
+
+    adm-0026 is the one worth reading. A Cyrillic ``с`` in ``сonfirm`` does NOT
+    bypass the reservation -- it genuinely is not ``confirm``, so not reserving
+    it is correct -- but a human reading an allowlist cannot tell it from the
+    real one. The hole is in the HUMAN's ability to audit the trust config,
+    which is the other half of the same trust model. An ASCII-only name rule
+    closes it; a cleverer regex over the reserved word never could.
+    """
+    for case_id in ("adm-0026", "adm-0027", "adm-0028", "adm-0029", "adm-0030"):
+        entry = case_of(case_id)
+
+        assert decide(entry)["allows"] is False, case_id
+        assert decide(entry)["admitted"] is False, case_id
+        assert entry["admission"]["php"]["allows"] is False, case_id
+        assert entry["admission"]["ts"]["allows"] is False, case_id
+
+
+def test_still_admits_the_namespaced_and_hyphenated_names_real_surfaces_use() -> None:
+    """The direction a name rule breaks things, and why this one is not stricter.
+
+    Dots, colons and hyphens are how surfaces namespace tools; a rule that
+    refused ``vendor.tool`` or ``web-search`` would be unusable and would get
+    removed, taking the homoglyph guard with it.
+    """
+    for case_id in ("adm-0031", "adm-0032"):
         entry = case_of(case_id)
 
         assert decide(entry)["admitted"] is True, case_id

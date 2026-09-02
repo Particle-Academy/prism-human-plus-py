@@ -282,6 +282,32 @@ _INVISIBLE = re.compile(
 )
 
 
+#: What a tool name may BE, checked before anything is asked about it.
+#:
+#: ASCII letters and digits, underscore, dot, colon and hyphen; a letter, digit
+#: or underscore first; at most 128 characters. That accepts every name this
+#: ecosystem actually uses -- ``terminal_confirm``, ``sheet_write``,
+#: ``web_search``, ``fetch_url``, namespaced ``vendor.tool`` -- and refuses
+#: everything else.
+#:
+#: ASCII-ONLY IS THE POINT, and it is what makes a homoglyph impossible. A
+#: surface can otherwise declare ``сonfirm`` with a Cyrillic ``с``: it is not the
+#: reserved word, so the reservation correctly does not fire, and a human reading
+#: the allowlist cannot tell it from the real one. That is not a hole in the
+#: regex -- it is a hole in the HUMAN's ability to audit the trust config, which
+#: is the other half of the same trust model.
+#:
+#: Anchored with ``\Z``, never ``$``: this language's ``$`` also matches before a
+#: final newline, exactly as PCRE's does, and that is precisely how
+#: ``terminal_confirm\n`` slipped past the reservation before (G-33/G-36). A
+#: validator carrying that bug would accept the very names it exists to refuse.
+_WELL_FORMED_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}\Z")
+
+
+def _is_well_formed_name(name: str) -> bool:
+    return _WELL_FORMED_NAME.match(name) is not None
+
+
 def _is_human_only(name: str) -> bool:
     """Confirmation tools belong to the HUMAN, and no trust level reaches them.
 
@@ -347,6 +373,9 @@ class TrustPolicy:
             raise ToolRefused("Human+ surface trust declares an empty allowlist.")
 
     def assert_allows(self, tool: ToolDefinition) -> None:
+        if not _is_well_formed_name(tool.name):
+            raise ToolRefused(f"Human+ tool name [{tool.name}] is not a well-formed tool name.")
+
         if _is_human_only(tool.name):
             raise ToolRefused(
                 f"Human+ tool [{tool.name}] is reserved for the human confirmation surface."
@@ -361,6 +390,9 @@ class TrustPolicy:
             raise ToolRefused(f"Human+ tool definition pin changed for [{tool.name}].")
 
     def allows(self, name: str) -> bool:
+        if not _is_well_formed_name(name):
+            return False
+
         if _is_human_only(name):
             return False
 
