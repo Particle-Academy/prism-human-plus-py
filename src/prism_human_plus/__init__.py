@@ -262,6 +262,25 @@ def _sort_deep(value: Any) -> Any:
 
 _HUMAN_ONLY = re.compile(r"(?:^|_)(?:confirm|reject|accept|approve|deny)$", re.IGNORECASE)
 
+#: Characters that are INVISIBLE at the end of a tool name.
+#:
+#: Spelled out by codepoint, and identically in all three languages, because the
+#: built-ins do not agree: PHP's ``trim()`` strips none of the Unicode ones,
+#: JavaScript's ``.trim()`` strips all of them including U+FEFF, and this
+#: language's ``.strip()`` strips them except U+FEFF. Using each language's own
+#: idea of "whitespace" here would close one hole and open three new
+#: divergences -- see G-36.
+#:
+#: Zero-width characters (U+200B..U+200D, U+FEFF) are in the set for the same
+#: reason the spaces are: they cannot be seen, and they defeat an end-anchored
+#: pattern just as effectively.
+_INVISIBLE = re.compile(
+    "^[\u0000\u0009-\u000d\u0020\u0085\u00a0\u1680"
+    "\u2000-\u200d\u2028\u2029\u202f\u205f\u3000\ufeff]+"
+    "|[\u0000\u0009-\u000d\u0020\u0085\u00a0\u1680"
+    "\u2000-\u200d\u2028\u2029\u202f\u205f\u3000\ufeff]+$"
+)
+
 
 def _is_human_only(name: str) -> bool:
     """Confirmation tools belong to the HUMAN, and no trust level reaches them.
@@ -270,8 +289,18 @@ def _is_human_only(name: str) -> bool:
     whole value of a staged write is that a person approved it; an agent that
     can call ``terminal_confirm`` approves its own proposals, and the surface
     has no way to tell that apart from a human clicking the button.
+
+    The name is NORMALISED first. A tool name is chosen by the SURFACE, and
+    ``$`` anchors at the end -- so before this was normalised, a surface could
+    name its tool ``terminal_confirm `` (one trailing space) and the reservation
+    simply did not fire, handing the confirmation tool to the agent under every
+    trust level including the wildcard, with nothing raised anywhere. G-36.
+
+    Trimming only ever makes this check MORE inclusive: it can reserve a name
+    that was previously callable, and can never un-reserve one. The allowlist is
+    matched against the RAW name and is deliberately untouched.
     """
-    return _HUMAN_ONLY.search(name) is not None
+    return _HUMAN_ONLY.search(_INVISIBLE.sub("", name)) is not None
 
 
 class TrustPolicy:

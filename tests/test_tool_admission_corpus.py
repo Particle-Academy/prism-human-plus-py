@@ -5,9 +5,11 @@ by this agent, so a tool the reference reserves for the human has to be reserved
 here too -- a name refused there and callable here is an agent approving its own
 proposals, and nothing errors to say so.
 
-This port agrees with the reference on the reservation, INCLUDING the trailing-
-newline row the TypeScript port gets wrong (G-33). Where it differs is the
-digest of an integral float (G-35).
+The reservation now agrees in all three languages for every name in the corpus,
+including the adversarial ones: G-33 (a trailing newline, which the TypeScript
+port used to admit) and G-36 (a trailing SPACE, which ALL THREE used to admit)
+are closed by normalising the name. Where this port still differs is the digest
+of an integral float (G-35).
 """
 
 from __future__ import annotations
@@ -76,7 +78,7 @@ def case_of(case_id: str) -> dict[str, Any]:
 
 
 def test_is_the_whole_suite_not_a_subset_someone_trimmed_to_green() -> None:
-    assert len(CORPUS["cases"]) == 20
+    assert len(CORPUS["cases"]) == 25
 
 
 def test_decides_every_case_the_way_the_corpus_recorded() -> None:
@@ -99,23 +101,57 @@ def test_reserves_confirmation_for_the_human_even_under_wildcard_trust() -> None
     assert decision["admitted"] is False
 
 
-def test_reserves_a_confirm_name_with_a_trailing_newline_which_typescript_does_not() -> None:
-    """G-33, and this port is on the correct side of it.
+def test_reserves_a_confirm_name_whatever_invisible_character_trails_it() -> None:
+    """G-33 and G-36, both CLOSED -- and this is the test that keeps them closed.
 
-    Python's ``$`` matches before a final newline, as PCRE's does, so
-    ``terminal_confirm\\n`` is reserved here and in the reference. JavaScript's
-    ``$`` without the multiline flag matches only at the very end, so the
-    TypeScript port hands that tool to the agent.
+    A tool name is chosen by the SURFACE, and ``$`` anchors at the end. A
+    trailing newline slipped past the TypeScript port while this one and the
+    reference reserved it (G-33); a trailing SPACE slipped past ALL THREE
+    (G-36), handing the confirmation tool to the agent under every trust level
+    including the wildcard.
 
-    A surface chooses its own tool names, which makes the newline attacker-
-    controlled. Asserted in the POSITIVE: this is the behaviour to keep.
+    The normalisation strips an EXPLICIT codepoint set, spelled identically in
+    all three languages. That detail IS the fix: the built-ins disagree three
+    ways -- this language's ``.strip()`` removes every one of these EXCEPT
+    U+FEFF, JavaScript's ``.trim()`` removes all of them, and PHP's ``trim()``
+    removes none of the Unicode ones -- so reaching for a built-in would have
+    closed one hole and opened three new divergences.
     """
-    entry = case_of("adm-0011")
+    reserved = [
+        "adm-0005",
+        "adm-0011",
+        "adm-0019",
+        "adm-0020",
+        "adm-0021",
+        "adm-0022",
+        "adm-0023",
+        "adm-0024",
+        "adm-0025",
+    ]
 
-    assert entry["tool"]["name"].endswith("\n")
-    assert decide(entry)["allows"] is False
-    assert entry["admission"]["php"]["allows"] is False
-    assert entry["admission"]["ts"]["allows"] is True
+    for case_id in reserved:
+        entry = case_of(case_id)
+
+        assert decide(entry)["allows"] is False, case_id
+        assert decide(entry)["admitted"] is False, case_id
+        # And the other two agree, which is the half a single-language suite
+        # cannot check and the half that was actually broken.
+        assert entry["admission"]["php"]["allows"] is False, case_id
+        assert entry["admission"]["ts"]["allows"] is False, case_id
+
+
+def test_still_admits_the_names_that_merely_look_like_a_reserved_verb() -> None:
+    """The other half of a reservation, and the half a fix like this can break.
+
+    Normalising only ever reserves MORE names, so these prove it did not
+    over-reach: ``confirmation_status`` and ``preconfirm`` stay callable.
+    """
+    for case_id in ("adm-0009", "adm-0010"):
+        entry = case_of(case_id)
+
+        assert decide(entry)["admitted"] is True, case_id
+        assert entry["admission"]["php"]["admitted"] is True, case_id
+        assert entry["admission"]["ts"]["admitted"] is True, case_id
 
 
 def test_digests_a_tool_with_no_schema_the_same_way_typescript_does() -> None:
@@ -153,39 +189,14 @@ def test_digests_an_integral_float_differently_from_both_others() -> None:
     assert entry["admission"]["php"]["digest"] == entry["admission"]["ts"]["digest"]
 
 
-def test_admits_a_confirm_name_with_one_trailing_space_and_so_does_every_other_language() -> None:
-    """G-36, and the worst finding in this suite precisely BECAUSE all three agree.
-
-    ``$`` tolerates at most one trailing newline in PCRE and Python and none in
-    JavaScript, and nothing normalises the name before matching -- so a surface
-    that calls its tool ``terminal_confirm `` gets the confirmation tool handed
-    to the agent in every language.
-
-    A cross-language corpus cannot find this by COMPARING languages; there is
-    nothing to compare. Asserted in the POSITIVE, describing the hole rather
-    than a guarantee, so the day someone closes it this row goes red and forces
-    the corpus and the register to move with the fix.
-
-    adm-0020 reaches the same hole with a second newline, which is why a fix
-    that only special-cases a single trailing newline -- the shape of G-33 -- is
-    visibly not enough.
-    """
-    for case_id in ("adm-0019", "adm-0020"):
-        entry = case_of(case_id)
-
-        assert entry["policy"]["mode"] == "everyTool"
-        assert decide(entry)["admitted"] is True, case_id
-        assert entry["admission"]["php"]["admitted"] is True, case_id
-        assert entry["admission"]["ts"]["admitted"] is True, case_id
-
-
 def test_agrees_on_the_pin_the_allowlist_and_every_clean_name() -> None:
-    """Everything except the three registered rows.
+    """Everything except the two digest rows still registered (G-34, G-35).
 
     Asserted as a set so a NEW divergence has somewhere to fail rather than
-    disappearing into a row that was already red.
+    disappearing into a row that was already red -- and so that closing either
+    one turns this red rather than leaving a stale exemption behind.
     """
-    known = {"adm-0011", "adm-0016", "adm-0018"}
+    known = {"adm-0016", "adm-0018"}
     unexpected = [
         entry["id"] for entry in CORPUS["cases"] if not entry["agrees"] and entry["id"] not in known
     ]
