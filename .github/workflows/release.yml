@@ -1,0 +1,105 @@
+name: Release
+
+# Publishing is a tag push, and nothing else. There is no manual dispatch and no
+# "publish from a branch" path, because both of those let a release exist that no
+# commit in this repository claims.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Guard the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # tomllib is stdlib from 3.11. The package floor is 3.10, but this job
+          # reads a file rather than exercising the package, so it may use a
+          # newer interpreter than the package supports.
+          python-version: "3.12"
+
+      # A tag is a human action and pyproject.toml is a file; nothing keeps the
+      # two in step. Publishing v0.2.0 from a tree that declares 0.1.0 puts a
+      # version on PyPI that no commit here claims -- and PyPI is append-only,
+      # so it cannot be taken back, only yanked.
+      - name: Tag must match the declared version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          echo "tag=${tag}  pyproject=${declared}"
+          if [ "${tag}" != "${declared}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} means ${tag}, but pyproject.toml declares ${declared}. Fix one of them."
+            exit 1
+          fi
+
+      # The tests ran when this commit landed on main. Establishing THAT before
+      # publishing is the whole point: a release that assumes green is the
+      # failure mode this ecosystem keeps finding in its own work.
+      #
+      # Asked of the tests.yml workflow directly rather than by filtering a run
+      # list by display name -- a workflow can be renamed, a filename is the
+      # identity. All nine Python repos use tests.yml.
+      #
+      # This fails when a tag is pushed before CI finishes on the same SHA.
+      # That is deliberate -- re-run this workflow once Tests is green.
+      - name: Tests must have passed for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tests.yml/runs?head_sha=${GITHUB_SHA}&status=success" --jq '.total_count')"
+          echo "Successful Tests runs for ${GITHUB_SHA}: ${count}"
+          if [ "${count}" -lt 1 ]; then
+            echo "::error::No successful Tests run for ${GITHUB_SHA}. Refusing to publish."
+            exit 1
+          fi
+
+  publish:
+    name: Build and publish to PyPI
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Requires a PyPI trusted publisher pointing at THIS repo, THIS workflow
+    # filename, and the `pypi` environment. See RELEASING.md -- until that is
+    # configured on PyPI, this job fails at the final step and publishes nothing.
+    environment:
+      name: pypi
+      # The PyPI project name, which is NOT the repository name.
+      url: https://pypi.org/p/prism-ai-human-plus
+    permissions:
+      contents: read
+      # OIDC. This is what replaces a stored API token: there is no long-lived
+      # PyPI credential in this repository's secrets to leak, rotate, or exfiltrate.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      # Catches a malformed README or metadata before PyPI rejects the upload.
+      # Discovering it after the tag exists means cutting a new version for a
+      # typo, because a version number cannot be reused.
+      - name: Check the artifacts
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
