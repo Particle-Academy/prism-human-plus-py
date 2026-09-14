@@ -22,6 +22,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Run again at publish time, not only when the commit landed: a dependency
+      # that has since gone unmaintained, or an approval since withdrawn from the
+      # allowlist, should stop the release.
+      - name: Fetch the third-party allowlist
+        uses: actions/checkout@v4
+        with:
+          repository: Particle-Academy/.github
+          path: .third-party-allowlist
+          persist-credentials: false
+
+      - name: Third-party dependency allowlist
+        run: |
+          node .third-party-allowlist/third-party/check.mjs --repo .
+          node -e "require('node:fs').rmSync('.third-party-allowlist',{recursive:true,force:true})"
+
       - uses: actions/setup-python@v5
         with:
           # tomllib is stdlib from 3.11. The package floor is 3.10, but this job
