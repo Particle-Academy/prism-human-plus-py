@@ -3,7 +3,7 @@
 This repository publishes **`prism-ai-human-plus`** to PyPI. The repository name and the
 package name are not the same, and PyPI cares about the package name.
 
-A release is a tag push. `.github/workflows/release.yml` does the rest.
+A release is a tag push. `.github/workflows/publish.yml` does the rest.
 
 ## One-time setup on PyPI, per package
 
@@ -17,10 +17,12 @@ On PyPI → the project → *Manage* → *Publishing*, add a GitHub publisher:
 |---|---|
 | Owner | `Particle-Academy` |
 | Repository | this repository's name |
-| Workflow name | `release.yml` |
+| Workflow name | `publish.yml` |
 | Environment name | `pypi` |
 
-All four must match exactly; PyPI checks every one of them.
+All four must match exactly; PyPI checks every one of them. The workflow name
+is part of that identity: rename `publish.yml` and publishing stops until the
+entry on PyPI is changed to match.
 
 For a package that has **never** been published, add it as a *pending*
 publisher instead (same form, on the "Publishing" page of your account). PyPI
@@ -34,9 +36,12 @@ creates the project on the first successful upload.
 3. Tag it and push:
 
    ```
-   git tag v0.2.0
+   git tag -a v0.2.0        # annotated: the message BECOMES the release notes
    git push origin v0.2.0
    ```
+
+   The workflow publishes to PyPI, creates the GitHub release from the tag's
+   message, then checks that PyPI serves the version.
 
 The tag must equal the declared version with a leading `v`. `v0.2.0` against a
 `pyproject.toml` that says `0.1.0` is refused before anything is built.
@@ -51,6 +56,10 @@ mistake it prevents:
 - **No green Tests for the SHA** → publishing on the assumption of green.
 - **`twine check` fails** → a malformed README is rejected by PyPI *after* the
   tag exists, forcing a version bump to fix a typo.
+- **Lightweight tag** → a release with no notes. Refused before the build,
+  because once the upload has happened the version cannot be taken back.
+- **PyPI never serves the version** → the last job fails even though the
+  upload succeeded. An accepted upload is not an installable package.
 
 If a tag was pushed before CI finished, that is not a failure of the release —
 re-run the workflow once Tests is green.
