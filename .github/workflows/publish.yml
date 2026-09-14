@@ -100,25 +100,20 @@ jobs:
             exit 1
           fi
 
-  publish:
-    name: Build and publish to PyPI
+  # Build and publish are separate jobs so `id-token: write` is never held by the
+  # job that runs build code. `python -m build` installs the build backend from
+  # PyPI; anything it runs could otherwise mint the token that publishes.
+  build:
+    name: Build and check the distributions
     needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Requires a PyPI trusted publisher pointing at THIS repo, THIS workflow
-    # filename, and the `pypi` environment. See RELEASING.md -- until that is
-    # configured on PyPI, this job fails at the final step and publishes nothing.
-    environment:
-      name: pypi
-      # The PyPI project name, which is NOT the repository name.
-      url: https://pypi.org/p/prism-ai-human-plus
     permissions:
       contents: read
-      # OIDC. This is what replaces a stored API token: there is no long-lived
-      # PyPI credential in this repository's secrets to leak, rotate, or exfiltrate.
-      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -137,8 +132,41 @@ jobs:
           python -m pip install --upgrade twine
           python -m twine check dist/*
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dists
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Requires a PyPI trusted publisher pointing at THIS repo, THIS workflow
+    # filename, and the `pypi` environment. See RELEASING.md -- until that is
+    # configured on PyPI, this job fails and publishes nothing.
+    environment:
+      name: pypi
+      # The PyPI project name, which is NOT the repository name.
+      url: https://pypi.org/p/prism-ai-human-plus
+    permissions:
+      # OIDC. This is what replaces a stored API token: there is no long-lived
+      # PyPI credential in this repository's secrets to leak, rotate, or exfiltrate.
+      id-token: write
+    steps:
+      # No checkout. This job uploads exactly the files the build job checked.
+      - uses: actions/download-artifact@v4
+        with:
+          name: dists
+          path: dist/
+
+      # Pinned by SHA, not by tag: a mutable reference in the one step holding
+      # the publishing token is what the April 2026 supply-chain compromises
+      # exploited. v1.14.2. No `password:`, and attestations are on by default,
+      # so PyPI records which repository and workflow published each file.
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
 
   release:
     name: Create the GitHub release
