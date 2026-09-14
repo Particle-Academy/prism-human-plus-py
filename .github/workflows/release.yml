@@ -21,6 +21,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Run again at publish time, not only when the commit landed: a dependency
       # that has since gone unmaintained, or an approval since withdrawn from the
