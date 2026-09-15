@@ -6,9 +6,22 @@ build-backend = "hatchling.build"
 name = "prism-ai-human-plus"
 version = "0.1.0"
 description = "Humans and agents sharing one surface, across a trust boundary. Python."
+readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [{ name = "Particle Academy" }]
+keywords = ["llm", "agents", "prism", "ai", "human-in-the-loop", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
 dependencies = []
 
 [project.optional-dependencies]
@@ -16,6 +29,12 @@ dev = ["pytest>=8.0", "mypy>=1.11", "ruff>=0.6"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/prism_human_plus"]
+
+# The source archive carries the package and its licence, and nothing else: not tests,
+# CI workflows or contributor notes. Anchored with a leading slash so a pattern cannot
+# match a nested file of the same name.
+[tool.hatch.build.targets.sdist]
+include = ["/src/prism_human_plus", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
