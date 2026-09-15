@@ -123,8 +123,13 @@ server-sent-events stream.
 
 ## Parity
 
-prism-parity's `human-plus-tool-admission` corpus pins tool admission against
-the PHP reference and the TypeScript port.
+prism-parity's `human-plus-tool-admission` corpus compares tool admission with
+the PHP reference and the TypeScript port. Admission and the confirmation-tool
+reservation agree on every case.
+
+Two pins differ. A tool with no schema gets a different digest in the PHP
+reference, and a schema containing an integral float such as `1.0` gets a
+different digest here. Compute a pin in the language that checks it.
 
 ## License
 
