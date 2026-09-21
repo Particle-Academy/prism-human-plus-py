@@ -7,6 +7,7 @@ import hmac
 import html
 import ipaddress
 import json as _json
+import math
 import re
 import secrets
 import threading
@@ -493,8 +494,24 @@ class SurfaceRevision:
 
                 # bool before int: True is an int in Python and nowhere else,
                 # and a revision of "True" is not a marker any surface minted.
-                if isinstance(value, int) and not isinstance(value, bool):
-                    return cls.observed(str(value), observed_from)
+                if isinstance(value, bool):
+                    continue
+
+                # A JSON number that is a whole value, however the host language
+                # decoded it. `1.0` is a float here and in PHP and an integer in
+                # JavaScript, and the reference used to reject it — which meant
+                # a surface serialising a whole revision with a decimal point
+                # had its marker DROPPED and the next call went out unpinned.
+                # Fractional and unsafe values are refused in all three instead,
+                # because they have no spelling the three agree on. Pinned by
+                # human-plus-change-feed.
+                if isinstance(value, int) or (
+                    isinstance(value, float)
+                    and math.isfinite(value)
+                    and value.is_integer()
+                    and abs(value) <= 9007199254740991
+                ):
+                    return cls.observed(str(int(value)), observed_from)
 
         return None
 
@@ -621,6 +638,78 @@ class SurfaceChanges:
     def unavailable(cls) -> SurfaceChanges:
         """No feed here. Nothing below this means anything."""
         return cls(ChangeFeed.UNAVAILABLE, (), None, False)
+
+    @classmethod
+    def read_from(cls, result: JsonObject, feed: ChangeFeed) -> SurfaceChanges:
+        """Read a surface's answer into this shape.
+
+        HERE RATHER THAN IN THE MANAGER, and not only for tidiness: this is the
+        part three languages have to agree on byte for byte, so it has to be
+        reachable by a conformance runner. One that re-implemented the read
+        would pin what the runner believes rather than what the package does.
+
+        Labels come back UNGUARDED. The manager frames them, because framing
+        needs the surface id and a nonce, and a nonce is not comparable across
+        languages.
+        """
+        changes: list[SurfaceChange] = []
+        attributed = False
+
+        for row in _change_rows(result):
+            change = SurfaceChange.from_row(row)
+
+            if change is None:
+                continue
+
+            changes.append(change)
+
+            # Proof arrives only when the surface names a hand that is NOT this
+            # agent's. A feed that can only ever say "agent" has not shown it
+            # can tell a person's edit from its own.
+            if change.actor in (ChangeActor.HUMAN, ChangeActor.OTHER):
+                attributed = True
+
+        return cls(
+            ChangeFeed.ATTRIBUTED if attributed and feed.is_answerable() else feed,
+            tuple(changes),
+            SurfaceRevision.from_result(result, "changes"),
+            _claims_complete(result),
+        )
+
+    def with_framed_labels(self, frame: Callable[[str], str]) -> SurfaceChanges:
+        """The same answer with each label passed through a framer.
+
+        The manager's hook for guarding surface text without this class knowing
+        what guarding is.
+        """
+        return replace(
+            self,
+            changes=tuple(
+                change if change.label == "" else replace(change, label=frame(change.label))
+                for change in self.changes
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Everything a conformance runner compares, in one shape.
+
+        The DERIVED answers are here as well as the parsed rows, because the
+        derivations are the part a port is most likely to get subtly wrong: a
+        language that parsed every row correctly and answered
+        ``nothing_changed()`` on an unanswerable feed would agree on the easy
+        half of this and be dangerous in production.
+        """
+        return {
+            "feed": self.feed.value,
+            "complete": self.complete,
+            "answered": self.answered(),
+            "nothing_changed": self.nothing_changed(),
+            "attributes": self.attributes(),
+            "revision": None if self.revision is None else self.revision.token,
+            "changes": [change.to_dict() for change in self.changes],
+            "defer_to": [change.handle for change in self.defer_to()],
+            "handles": self.handles(),
+        }
 
     def answered(self) -> bool:
         """Did the surface actually answer the question?
@@ -1483,50 +1572,22 @@ class HumanPlusManager:
                 self._record_terminal(attachment, failure)
                 raise
 
-            changes: list[SurfaceChange] = []
-            attributed = False
+            # Parsed where a conformance runner can reach it. The manager's
+            # job here is the guard and the attachment, not the shape.
+            answer = SurfaceChanges.read_from(result, attachment.change_feed)
 
-            for row in _change_rows(result):
-                change = SurfaceChange.from_row(row)
+            if answer.revision is not None:
+                attachment = attachment.with_revision(answer.revision)
 
-                if change is None:
-                    continue
-
-                changes.append(
-                    change
-                    if change.label == ""
-                    else replace(
-                        change,
-                        # The surface's own words, guarded like any other text
-                        # coming back from a running application.
-                        label=self._guard.guard(
-                            attachment.invitation.surface_id, feed_tool.name, change.label
-                        ),
-                    )
-                )
-
-                # Proof arrives only when the surface names a hand that is NOT
-                # this agent's. A feed that can only ever say "agent" has not
-                # shown it can tell a person's edit from its own. Evidence when
-                # it arrives, never a precondition — the same rule as ENFORCED.
-                if change.actor in (ChangeActor.HUMAN, ChangeActor.OTHER):
-                    attributed = True
-
-            observed = SurfaceRevision.from_result(result, feed_tool.name)
-
-            if observed is not None:
-                attachment = attachment.with_revision(observed)
-
-            if attributed:
+            if answer.feed is ChangeFeed.ATTRIBUTED:
                 attachment = attachment.observing_attribution()
 
             self._store.put(attachment, attachment.generation)
 
-            return SurfaceChanges(
-                attachment.change_feed,
-                tuple(changes),
-                attachment.revision,
-                _claims_complete(result),
+            return answer.with_framed_labels(
+                lambda label: self._guard.guard(
+                    attachment.invitation.surface_id, feed_tool.name, label
+                )
             )
 
         return self._store.lock(id, run)
