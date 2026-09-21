@@ -12,6 +12,7 @@ jobs:
   test:
     name: python ${{ matrix.python }}
     runs-on: ubuntu-latest
+    needs: third-party
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -29,6 +30,7 @@ jobs:
   static:
     name: Static analysis
     runs-on: ubuntu-latest
+    needs: third-party
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
