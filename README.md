@@ -121,6 +121,78 @@ server-sent-events stream.
   proxy is what stops a public name that resolves to a private address.
 - A frame over `max_frame_bytes` (262,144 by default) is refused.
 
+## Two writers, and what changed since my last turn
+
+**A human editing the same surface as the agent used to lose their work in
+silence.** The agent read, the person committed, the agent wrote, and both
+writes succeeded — which is exactly what a lost update looks like from the
+inside.
+
+Two mechanisms, and they answer different questions.
+
+### The revision: did the world move under me
+
+A tool result may carry a marker for the state it just showed. It is stored on
+the attachment and **pinned to every later call** — reads included, because this
+package cannot tell a read from a write and MCP's `readOnlyHint` is explicitly a
+hint the spec says not to trust for security decisions.
+
+If the surface says the marker is stale the call is refused with
+`SurfaceChangedUnderYou`, **nothing is written**, and the stored marker is
+dropped so the agent can read again.
+
+`conflict_detection()` reports what has been OBSERVED, which is less than what
+is configured:
+
+| `ConflictDetection` | What is known |
+|---|---|
+| `NOT_OBSERVED` | The surface has not answered yet. |
+| `UNAVAILABLE` | It mints nothing. A concurrent edit **will** be lost silently. |
+| `MINTED` | It mints, so every call is pinned. Whether it **enforces** is not observable. |
+| `ENFORCED` | It refused a stale pin. Proven, because it happened. |
+
+`MINTED` is the one to read carefully. The reference's first integrator minted
+on every write result and read an incoming pin nowhere, so a pinned call was
+applied exactly as an unpinned one — and the boolean this replaced said `True`.
+
+### The change feed: what did somebody else do
+
+A revision stops an agent overwriting a change it did not know about. It does
+nothing about an agent that re-reads, sees current state, decides the surface
+has drifted from what it intended, and puts it back — over a person's edit, with
+nothing stale anywhere and no error at any layer.
+
+```python
+changes = human_plus.changes_since(owner, attachment_id)
+
+if not changes.answered():
+    ...  # the surface has no feed; an empty list is NOT evidence of quiet
+
+for change in changes.defer_to():
+    change.handle  # the surface's own id
+    change.kind  # CREATED | UPDATED | DELETED | MOVED | UNKNOWN
+    change.actor  # HUMAN | AGENT | OTHER | UNKNOWN
+```
+
+**The empty list is the dangerous value.** "Nothing changed since your marker"
+and "I cannot answer that question" are the same empty list on the wire, so
+`ChangeFeed` comes first and `nothing_changed()` is the only method that means
+what an empty list looks like it means.
+
+**Attribution is the load-bearing field.** A change is deferred to unless the
+surface positively said this agent made it. On a surface where every write path
+is an agent tool — the first one asked is exactly that — nothing is attributed,
+so everything is deferred to: not because it is all a person's, but because none
+of it can be shown to be the agent's own.
+
+`complete` is true unless the surface says otherwise. It exists because feeds
+have holes their authors know about: the first surface asked hard-deletes rows
+with no tombstone, so a removal moves no revision and appears in no feed.
+
+See the reference's README for the surface's half of the contract — the tool
+names, the key names read per field, and why `change` must be sent even when
+`kind` is.
+
 ## Parity
 
 prism-parity's `human-plus-tool-admission` corpus compares tool admission with

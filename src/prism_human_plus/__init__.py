@@ -22,6 +22,11 @@ __all__ = [
     "AttachmentState",
     "AttachmentStore",
     "AttachmentUnauthorized",
+    "ChangeActor",
+    "ChangeFeed",
+    "ChangeKind",
+    "ConflictDetection",
+    "ConflictDetectionUnavailable",
     "HarnessTool",
     "HumanPlusError",
     "HumanPlusManager",
@@ -37,7 +42,12 @@ __all__ = [
     "ResultGuard",
     "SsePostRelayTransport",
     "SurfaceAttachment",
+    "SurfaceChange",
+    "SurfaceChangedUnderYou",
+    "SurfaceChanges",
     "SurfaceInvitation",
+    "SurfaceRevision",
+    "SurfaceRevisionRejected",
     "SurfaceTool",
     "SurfaceUnavailable",
     "ToolDefinition",
@@ -72,6 +82,67 @@ class SurfaceUnavailable(HumanPlusError):
     """``410 session_gone``. Terminal: the surface cannot be resumed."""
 
 
+class SurfaceChangedUnderYou(HumanPlusError):
+    """The surface moved between the agent's read and its write.
+
+    ## What this replaces, which is nothing
+
+    Before this existed, a human committing an edit while an agent was mid-turn
+    produced NO failure at all. The agent's write landed on top, the human's
+    change was gone, and the only party who could tell was the person watching
+    their work disappear. A lost update reports nothing by construction: both
+    writes succeeded, and that is exactly the problem.
+
+    ## It is raised for the agent, not only for the log
+
+    The message is written to be read by a MODEL mid-turn, because that is who
+    receives it. ``code`` is there so a host can branch without matching prose.
+    """
+
+    code = "surface_changed_under_you"
+
+    @classmethod
+    def during(cls, tool: str, sent: SurfaceRevision | None) -> SurfaceChangedUnderYou:
+        seen = (
+            "You were working from a surface state whose revision was never recorded."
+            if sent is None
+            else (
+                f"You were working from the surface as it looked at revision {sent.token}, "
+                f"observed when you called `{sent.observed_from}`."
+            )
+        )
+
+        return cls(
+            f"The surface changed while you were working on it, so `{tool}` was NOT applied.\n\n"
+            f"{seen} Someone else — a person editing the same surface, or another participant — "
+            "has committed a change since then.\n\n"
+            "Nothing was written and nothing was lost. Read the surface again before deciding "
+            "what to do: the state you were reasoning about is out of date, and repeating this "
+            "call with the same arguments is how the other change gets overwritten."
+        )
+
+
+class SurfaceRevisionRejected(HumanPlusError):
+    """The surface refused a pinned call because the marker was stale.
+
+    Internal to the client. The manager catches it and re-raises
+    :class:`SurfaceChangedUnderYou`, which is what a consumer branches on.
+    """
+
+
+class ConflictDetectionUnavailable(HumanPlusError):
+    """A run demanded proof of conflict detection from a surface that mints none."""
+
+    code = "conflict_detection_unavailable"
+
+    @classmethod
+    def for_surface(cls, surface: str, tool: str) -> ConflictDetectionUnavailable:
+        return cls(
+            f"Surface [{surface}] mints no revision, so calling `{tool}` cannot be protected "
+            "from a lost update. This run requires conflict detection."
+        )
+
+
 class ToolRefused(HumanPlusError):
     """Local policy refused, before anything reached the surface."""
 
@@ -84,6 +155,214 @@ class AttachmentState(str, Enum):
     SURFACE_UNAVAILABLE = "surface_unavailable"
     UNAUTHORIZED = "attachment_unauthorized"
     DETACHED = "detached"
+
+
+class ConflictDetection(str, Enum):
+    """How much lost-update protection this surface has been OBSERVED to have.
+
+    Not a boolean, and the reference learned that the hard way. It was one, and
+    it answered "does this surface mint revisions" while its documentation
+    claimed a lost update would be caught. The first integrator minted on every
+    write result and read an incoming pin nowhere, so the detector said ``True``
+    and every update would still have been lost.
+
+    There is no "require enforcement" mode: a surface with one writer never
+    rejects anything and is indistinguishable from one that cannot, so a flag
+    demanding proof would refuse every write on a healthy surface.
+    """
+
+    #: Nothing is known — the surface has not answered.
+    NOT_OBSERVED = "not_observed"
+    #: It answered and minted nothing. A concurrent edit WILL be lost silently.
+    UNAVAILABLE = "unavailable"
+    #: It mints, so every call is pinned. Whether it ENFORCES is not observable.
+    MINTED = "minted"
+    #: It has refused a stale pin. Proven, because it happened.
+    ENFORCED = "enforced"
+
+    def is_unprotected(self) -> bool:
+        """Is a lost update definitely undetectable here?"""
+        return self is ConflictDetection.UNAVAILABLE
+
+    def is_proven(self) -> bool:
+        """Has this surface been seen to actually refuse a stale pin?"""
+        return self is ConflictDetection.ENFORCED
+
+    def describe(self) -> str:
+        """One sentence saying exactly what is known, for an operator or a log."""
+        return {
+            ConflictDetection.NOT_OBSERVED: (
+                "The surface has not answered a call yet, so nothing is known about conflict "
+                "detection."
+            ),
+            ConflictDetection.UNAVAILABLE: (
+                "The surface mints no revision, so writes are unpinned and a concurrent edit "
+                "will be lost silently."
+            ),
+            ConflictDetection.MINTED: (
+                "The surface mints revisions and every call is pinned. Whether it ENFORCES the "
+                "pin is not observable from here."
+            ),
+            ConflictDetection.ENFORCED: (
+                "The surface has refused a stale pin, so enforcement is proven rather than assumed."
+            ),
+        }[self]
+
+
+class ChangeFeed(str, Enum):
+    """How much this surface has been OBSERVED able to say about what changed.
+
+    The same trap as :class:`ConflictDetection`, twice over:
+
+    1. **An empty answer is ambiguous.** "Nothing changed since your marker" and
+       "I cannot answer that question" are the same empty list on the wire. One
+       value for both would make silence read as calm, and an agent that reads
+       silence as calm is the agent that reverts a human's edit believing it is
+       fixing drift.
+    2. **A feed without attribution cannot prevent the thing it exists for.**
+       Knowing a handle moved does not say whether a PERSON moved it or whether
+       the agent is looking at its own last write.
+    """
+
+    #: The surface has not listed its tools yet.
+    NOT_OBSERVED = "not_observed"
+    #: It offers no feed. "What changed" is UNANSWERABLE here.
+    UNAVAILABLE = "unavailable"
+    #: A feed exists. Whether it names WHO is not yet observable.
+    OFFERED = "offered"
+    #: It has named a hand other than this agent's. Proven.
+    ATTRIBUTED = "attributed"
+
+    def is_answerable(self) -> bool:
+        """Can this surface answer "what changed since X" at all?"""
+        return self in (ChangeFeed.OFFERED, ChangeFeed.ATTRIBUTED)
+
+    def is_unavailable(self) -> bool:
+        return self is ChangeFeed.UNAVAILABLE
+
+    def is_proven(self) -> bool:
+        return self is ChangeFeed.ATTRIBUTED
+
+    def describe(self) -> str:
+        return {
+            ChangeFeed.NOT_OBSERVED: (
+                "The surface has not listed its tools yet, so nothing is known about a change feed."
+            ),
+            ChangeFeed.UNAVAILABLE: (
+                "The surface offers no change feed, so what a human changed cannot be known "
+                "here. An empty answer is not evidence that nothing changed."
+            ),
+            ChangeFeed.OFFERED: (
+                "The surface offers a change feed. Whether it names WHO made a change is not "
+                "observable until something changes."
+            ),
+            ChangeFeed.ATTRIBUTED: (
+                "The surface has reported a change made by someone other than this agent, so "
+                "attribution is proven rather than assumed."
+            ),
+        }[self]
+
+
+class ChangeActor(str, Enum):
+    """Who made a change — the field the whole change feed exists for.
+
+    "What changed" without "who" does not stop the revert: the agent's own last
+    write is in the list and looks exactly like a person's.
+
+    :attr:`UNKNOWN` is a case and not ``None``. A change whose actor the surface
+    did not name is not a change nobody made, and it is not this agent's;
+    collapsing it into either is the mistake.
+    """
+
+    HUMAN = "human"
+    AGENT = "agent"
+    OTHER = "other"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def parse(cls, value: object) -> ChangeActor:
+        """Map whatever the surface called it onto a case, without guessing.
+
+        Anything unrecognised is :attr:`UNKNOWN` rather than a default — a
+        surface that says ``"actor": "operator"`` means something, and quietly
+        deciding it means ``agent`` would be the revert bug arriving through the
+        parser.
+        """
+        if not isinstance(value, str):
+            return cls.UNKNOWN
+
+        return {
+            "human": cls.HUMAN,
+            "user": cls.HUMAN,
+            "person": cls.HUMAN,
+            "operator": cls.HUMAN,
+            "agent": cls.AGENT,
+            "assistant": cls.AGENT,
+            "self": cls.AGENT,
+            "me": cls.AGENT,
+            "other": cls.OTHER,
+            "system": cls.OTHER,
+            "job": cls.OTHER,
+            "service": cls.OTHER,
+        }.get(value.strip().lower(), cls.UNKNOWN)
+
+    def deserves_deference(self) -> bool:
+        """Should an agent leave this change alone rather than correct it?
+
+        **Only meaningful when the feed is ATTRIBUTED.** Ask
+        :meth:`SurfaceChanges.defer_to` instead, which knows whether the surface
+        can attribute anything at all: where every write path is an agent tool,
+        EVERY change is UNKNOWN for a structural reason, and an agent deferring
+        to all of them could never correct its own work.
+        """
+        return self is not ChangeActor.AGENT
+
+
+class ChangeKind(str, Enum):
+    """What kind of change happened to a handle.
+
+    Coarse on purpose — this package does not model the surface's data.
+
+    :attr:`MOVED` earns its place separately from :attr:`UPDATED` because it is
+    the silent one: a human reorders, every handle stays valid, every position
+    is now wrong, and nothing errors.
+    """
+
+    CREATED = "created"
+    UPDATED = "updated"
+    DELETED = "deleted"
+    MOVED = "moved"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def parse(cls, value: object) -> ChangeKind:
+        if not isinstance(value, str):
+            return cls.UNKNOWN
+
+        return {
+            "created": cls.CREATED,
+            "create": cls.CREATED,
+            "added": cls.CREATED,
+            "add": cls.CREATED,
+            "inserted": cls.CREATED,
+            "updated": cls.UPDATED,
+            "update": cls.UPDATED,
+            "changed": cls.UPDATED,
+            "edited": cls.UPDATED,
+            "modified": cls.UPDATED,
+            "deleted": cls.DELETED,
+            "delete": cls.DELETED,
+            "removed": cls.DELETED,
+            "remove": cls.DELETED,
+            "moved": cls.MOVED,
+            "move": cls.MOVED,
+            "reordered": cls.MOVED,
+            "reorder": cls.MOVED,
+            "reparented": cls.MOVED,
+        }.get(value.strip().lower(), cls.UNKNOWN)
+
+    def leaves_handle_valid(self) -> bool:
+        return self is not ChangeKind.DELETED
 
 
 class Priority(str, Enum):
@@ -150,6 +429,265 @@ class SurfaceInvitation:
 
 
 @dataclass(frozen=True)
+class SurfaceRevision:
+    """An opaque marker for "the version of the surface the agent last saw".
+
+    ## Why an opaque token and not a number
+
+    This package does not know what a surface's state IS. Tools come from the
+    surface's own ``tools/list`` and it never models the data behind them, so it
+    cannot compute a version, compare two, or merge anything.
+
+    What it can do is CARRY a marker the surface minted, hand it back on the
+    next call, and refuse when the surface says the marker is stale. That is
+    optimistic concurrency with the comparison left where the knowledge is.
+
+    The token is never parsed, never ordered, never inspected. An ETag, a
+    Lamport counter, a row version, a content hash — all work here, and this
+    class cannot tell which it is holding.
+    """
+
+    #: The surface's own marker, moved but never interpreted.
+    token: str
+    #: Which tool call observed it. Diagnostic only — never a decision.
+    observed_from: str
+
+    @classmethod
+    def observed(cls, token: str, observed_from: str) -> SurfaceRevision:
+        trimmed = token.strip()
+
+        if trimmed == "":
+            raise HumanPlusError(
+                "A surface revision cannot be empty; omit it instead of sending a blank marker."
+            )
+
+        # A ceiling, because this is stored on the attachment and echoed on
+        # every subsequent call. A surface that put its whole state in the
+        # revision would otherwise turn durable storage and every request body
+        # into a copy of the document.
+        if len(trimmed.encode("utf-8")) > 512:
+            raise HumanPlusError(
+                "A surface revision marker is longer than 512 bytes; a revision is an "
+                "identifier, not a payload."
+            )
+
+        return cls(trimmed, observed_from)
+
+    @classmethod
+    def from_result(cls, result: JsonObject, observed_from: str) -> SurfaceRevision | None:
+        """Pull a revision out of whatever the surface returned, or None.
+
+        Several key names because this half of the wire is the surface's, and
+        the first consumer's relay is not the only one that will ever be bound.
+        ``_meta`` is where MCP puts implementation data, so it is checked first.
+        """
+        meta = result.get("_meta")
+        meta = meta if isinstance(meta, dict) else {}
+
+        for key in ("revision", "surfaceRevision", "surface_revision", "version", "etag"):
+            for source in (meta, result):
+                value = source.get(key)
+
+                if isinstance(value, str) and value.strip() != "":
+                    return cls.observed(value, observed_from)
+
+                # bool before int: True is an int in Python and nowhere else,
+                # and a revision of "True" is not a marker any surface minted.
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return cls.observed(str(value), observed_from)
+
+        return None
+
+    def to_dict(self) -> dict[str, str]:
+        return {"token": self.token, "observed_from": self.observed_from}
+
+
+@dataclass(frozen=True)
+class SurfaceChange:
+    """One thing that happened to the surface since a marker.
+
+    Four fields, and the restraint is the design. This package cannot say what a
+    screen IS or how it differs — only that a handle the agent knows about was
+    created, updated, moved or deleted, and by whom. That is enough for an agent
+    to decide whether to re-read before writing.
+    """
+
+    #: The surface's own id for the thing that changed. Never parsed here.
+    handle: str
+    kind: ChangeKind
+    actor: ChangeActor
+    #: The surface's own label for it, or empty. Untrusted text.
+    label: str = ""
+
+    @classmethod
+    def from_row(cls, row: JsonObject) -> SurfaceChange | None:
+        """Read one change out of whatever the surface returned.
+
+        **``kind`` is read from the CHANGE, not from the thing.** A surface that
+        returns ``change: "updated"`` beside ``kind: "chart"`` — the component
+        type — is already the shape in the wild, and taking ``kind`` would parse
+        a component type as an event type.
+        """
+        handle: str | None = None
+
+        for key in ("handle", "id", "screen_id", "screenId", "node_id", "nodeId", "key"):
+            value = row.get(key)
+
+            if isinstance(value, str) and value.strip() != "":
+                handle = value.strip()
+                break
+
+            if isinstance(value, int) and not isinstance(value, bool):
+                handle = str(value)
+                break
+
+        # A change nobody can point at is not one this package can hand to an
+        # agent. Dropped rather than invented a handle for.
+        if handle is None:
+            return None
+
+        kind = ChangeKind.UNKNOWN
+
+        for key in ("change", "change_kind", "changeKind", "event", "action", "op", "kind"):
+            if key not in row:
+                continue
+
+            read = ChangeKind.parse(row[key])
+
+            if read is not ChangeKind.UNKNOWN:
+                kind = read
+                break
+
+        actor = ChangeActor.UNKNOWN
+
+        for key in ("actor_type", "actorType", "actor", "by", "author", "changed_by", "changedBy"):
+            if key not in row:
+                continue
+
+            read_actor = ChangeActor.parse(row[key])
+
+            if read_actor is not ChangeActor.UNKNOWN:
+                actor = read_actor
+                break
+
+        label = ""
+
+        for key in ("label", "title", "name", "component", "component_kind"):
+            value = row.get(key)
+
+            if isinstance(value, str) and value.strip() != "":
+                label = value.strip()
+                break
+
+        return cls(handle, kind, actor, label)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "handle": self.handle,
+            "kind": self.kind.value,
+            "actor": self.actor.value,
+            "label": self.label,
+        }
+
+
+@dataclass(frozen=True)
+class SurfaceChanges:
+    """What a surface said changed since a marker — and, first, whether it was
+    in any position to say.
+
+    ## The empty list is the dangerous value
+
+    Returning a bare list would make "nothing changed" and "I cannot answer"
+    indistinguishable. So :attr:`feed` comes first and :meth:`answered` is the
+    question to ask before :attr:`changes` means anything.
+
+    ## Incomplete feeds are a real case
+
+    The first surface asked can report creates, updates and layout moves since a
+    marker, and cannot report a delete at all — the row is hard-deleted, the
+    head does not advance, there is no tombstone. "Nothing changed" is what it
+    says when a screen was destroyed. A package cannot detect that from outside;
+    it can let the surface SAY so, and :attr:`complete` carries the admission.
+    """
+
+    feed: ChangeFeed
+    changes: tuple[SurfaceChange, ...] = ()
+    #: The marker these changes are current as of — hand it back next turn.
+    revision: SurfaceRevision | None = None
+    #: False when the surface declared its answer partial, or could not answer.
+    complete: bool = True
+
+    @classmethod
+    def unavailable(cls) -> SurfaceChanges:
+        """No feed here. Nothing below this means anything."""
+        return cls(ChangeFeed.UNAVAILABLE, (), None, False)
+
+    def answered(self) -> bool:
+        """Did the surface actually answer the question?
+
+        **Check this before reading :attr:`changes`.** An empty list from a
+        surface with no feed is not evidence of quiet.
+        """
+        return self.feed.is_answerable()
+
+    def nothing_changed(self) -> bool:
+        """Is it safe to conclude that nothing changed?
+
+        True only when the surface could answer, did answer, said nothing
+        changed, and did not warn that its answer is partial.
+        """
+        return self.answered() and self.complete and len(self.changes) == 0
+
+    def attributes(self) -> bool:
+        """Can this surface tell one hand from another at all?"""
+        return self.feed.is_proven()
+
+    def defer_to(self) -> list[SurfaceChange]:
+        """The changes an agent should leave alone rather than correct.
+
+        **A change is deferred to unless the surface positively said this agent
+        made it.** One rule, and it lands correctly in both worlds: a surface
+        that cannot attribute reports everything as UNKNOWN, so all of it is
+        deferred to — not because it is all a person's, but because none can be
+        SHOWN to be the agent's own, and undoing a person's work is the
+        expensive mistake.
+        """
+        if not self.answered():
+            return []
+
+        return [change for change in self.changes if change.actor.deserves_deference()]
+
+    def handles(self) -> list[str]:
+        """Every handle that moved, for an agent deciding what to re-read."""
+        seen: dict[str, None] = {}
+
+        for change in self.changes:
+            seen.setdefault(change.handle, None)
+
+        return list(seen)
+
+    def describe(self) -> str:
+        """One sentence an agent or an operator can act on."""
+        if not self.answered():
+            return self.feed.describe()
+
+        count = len(self.changes)
+        summary = (
+            "The surface reports no changes since the last marker."
+            if count == 0
+            else f"The surface reports {count} change(s) since the last marker."
+        )
+
+        if not self.complete:
+            summary += " The surface declared this answer PARTIAL, so some changes are not in it."
+
+        if not self.attributes():
+            summary += " It has never named an actor, so who made these changes is not known here."
+
+        return summary
+
+
+@dataclass(frozen=True)
 class SurfaceAttachment:
     """One agent's seat on one surface.
 
@@ -166,9 +704,84 @@ class SurfaceAttachment:
     client_id: str
     generation: int = 0
     state: AttachmentState = AttachmentState.ATTACHED
+    #: The marker the surface last minted, carried to the next call.
+    revision: SurfaceRevision | None = None
+    conflict_detection: ConflictDetection = ConflictDetection.NOT_OBSERVED
+    #: What this surface has been seen able to say about WHO changed what.
+    change_feed: ChangeFeed = ChangeFeed.NOT_OBSERVED
 
     def transition(self, state: AttachmentState) -> SurfaceAttachment:
         return replace(self, generation=self.generation + 1, state=state)
+
+    def with_revision(self, revision: SurfaceRevision | None) -> SurfaceAttachment:
+        """Record the marker a call observed.
+
+        Seeing a revision proves minting, so it upgrades OUT of UNAVAILABLE — a
+        surface that answered once without one and mints later plainly does
+        mint. ENFORCED is never downgraded: it was proven by a refusal that
+        happened.
+        """
+        detection = (
+            ConflictDetection.MINTED
+            if revision is not None and self.conflict_detection is not ConflictDetection.ENFORCED
+            else self.conflict_detection
+        )
+
+        return replace(self, revision=revision, conflict_detection=detection)
+
+    def observing_enforcement(self) -> SurfaceAttachment:
+        """Record that the surface actually REFUSED a stale pin.
+
+        The only positive proof of enforcement available, and it is permanent: a
+        refusal that happened cannot un-happen. It also drops the marker, which
+        is the recovery path — an agent left holding a stale token cannot
+        refresh it, because a surface gating reads on the marker refuses the
+        very read that would refresh.
+        """
+        return replace(self, revision=None, conflict_detection=ConflictDetection.ENFORCED)
+
+    def observing_no_revision(self) -> SurfaceAttachment:
+        """Record that the surface answered and minted nothing.
+
+        Only ever moves NOT_OBSERVED to UNAVAILABLE. A surface that supplied a
+        revision once and then had nothing new to say still mints them.
+        """
+        if self.conflict_detection is not ConflictDetection.NOT_OBSERVED:
+            return self
+
+        return replace(self, conflict_detection=ConflictDetection.UNAVAILABLE)
+
+    def without_revision(self) -> SurfaceAttachment:
+        """Forget the revision, so the next call goes out unpinned."""
+        return replace(self, revision=None)
+
+    def observing_change_feed(self, offered: bool) -> SurfaceAttachment:
+        """Record what the surface's tool list said about a change feed.
+
+        Never downgrades a proven ATTRIBUTED: a surface that listed a shorter
+        set of tools has not stopped being able to attribute what it already
+        did.
+        """
+        if self.change_feed is ChangeFeed.ATTRIBUTED:
+            return self
+
+        feed = ChangeFeed.OFFERED if offered else ChangeFeed.UNAVAILABLE
+
+        if feed is self.change_feed:
+            return self
+
+        return replace(self, change_feed=feed)
+
+    def observing_attribution(self) -> SurfaceAttachment:
+        """Record that the surface named someone who is not this agent.
+
+        Permanent, for the same reason enforcement is: it happened. A later turn
+        where only the agent wrote proves nothing either way.
+        """
+        if self.change_feed is ChangeFeed.ATTRIBUTED:
+            return self
+
+        return replace(self, change_feed=ChangeFeed.ATTRIBUTED)
 
 
 @dataclass(frozen=True)
@@ -583,10 +1196,62 @@ class LegacyMcpClient:
 
         return [ToolDefinition.from_dict(tool if isinstance(tool, dict) else {}) for tool in tools]
 
-    def call(self, attachment: SurfaceAttachment, name: str, arguments: JsonObject) -> JsonObject:
+    def call(
+        self,
+        attachment: SurfaceAttachment,
+        name: str,
+        arguments: JsonObject,
+        revision: SurfaceRevision | None = None,
+    ) -> JsonObject:
         self.initialize(attachment)
 
-        return self._request(attachment, "tools/call", {"name": name, "arguments": arguments})
+        params: JsonObject = {"name": name, "arguments": arguments}
+
+        # PINNED ON EVERY CALL, not only on the ones that look like writes.
+        #
+        # The package cannot tell a read from a write: tool names come from the
+        # surface, and MCP's `readOnlyHint` is explicitly a hint the spec says
+        # not to trust for security decisions. Deciding from it would let a
+        # surface mark a mutating tool read-only and have its writes go out
+        # unpinned — the one direction that must not be possible.
+        #
+        # Pinning a read costs nothing: a read overwrites nothing, so the worst
+        # case is a surface choosing to refuse a stale read, which is its call
+        # to make and recoverable because a rejection drops the marker.
+        if revision is not None:
+            params["_meta"] = {"revision": revision.token}
+
+        return self._request(attachment, "tools/call", params)
+
+    @staticmethod
+    def _rejects_revision(error: JsonObject) -> bool:
+        """Is this error the surface saying "your revision is stale"?
+
+        Several spellings because this half of the wire is the surface's.
+        JSON-RPC has no precondition code of its own, so implementations reach
+        for an application code in ``data``, a string code, or the HTTP status
+        they would have sent. Recognising one shape only would mean a surface
+        that protects its state correctly still loses updates through this
+        client.
+        """
+        data = error.get("data")
+        data = data if isinstance(data, dict) else {}
+        candidates = [error.get("code"), data.get("code"), data.get("reason")]
+
+        for candidate in candidates:
+            if candidate == 409 and not isinstance(candidate, bool):
+                return True
+
+            if isinstance(candidate, str) and candidate.strip().lower() in (
+                "conflict",
+                "revision_mismatch",
+                "revision_stale",
+                "precondition_failed",
+                "stale_revision",
+            ):
+                return True
+
+        return False
 
     def _request(
         self, attachment: SurfaceAttachment, method: str, params: JsonObject | None = None
@@ -606,7 +1271,28 @@ class LegacyMcpClient:
             raise HumanPlusError("Fancy relay returned an uncorrelated JSON-RPC response.")
 
         if "error" in response:
-            raise HumanPlusError("Fancy surface returned a JSON-RPC error.")
+            error = response["error"]
+            error = error if isinstance(error, dict) else {}
+
+            if self._rejects_revision(error):
+                raise SurfaceRevisionRejected(
+                    "The Fancy surface rejected the revision this call was pinned to."
+                )
+
+            # The surface's own reason, not discarded. Without it a
+            # misconfigured tool, a refused argument and an internal error are
+            # one indistinguishable sentence, and the reason is the only part
+            # that tells anyone what to do about it.
+            code = error.get("code")
+            message = error.get("message")
+            shown_code = f" [{code}]" if isinstance(code, (str, int)) else ""
+            shown_message = (
+                f": {message}" if isinstance(message, str) and message.strip() != "" else ""
+            )
+
+            raise HumanPlusError(
+                f"Fancy surface returned a JSON-RPC error{shown_code}{shown_message}."
+            )
 
         result = response.get("result")
 
@@ -614,6 +1300,65 @@ class LegacyMcpClient:
             raise HumanPlusError("Fancy surface returned a malformed JSON-RPC result.")
 
         return result
+
+
+#: The tool names a surface may offer a change feed under.
+#:
+#: Several, because this half of the wire is the surface's. Matched
+#: case-insensitively and nothing else: a tool that merely looks like a feed is
+#: not called speculatively.
+_CHANGE_FEED_TOOLS = (
+    "changes_since",
+    "changessince",
+    "surface_changes",
+    "surfacechanges",
+    "what_changed",
+    "whatchanged",
+    "changes",
+)
+
+
+def _change_rows(result: JsonObject) -> list[JsonObject]:
+    """The rows of changes in whatever shape the surface returned them.
+
+    ``_meta`` first, then the top level — the same order
+    :meth:`SurfaceRevision.from_result` looks in, because MCP puts
+    implementation data there.
+    """
+    meta = result.get("_meta")
+    meta = meta if isinstance(meta, dict) else {}
+
+    for key in ("changes", "change_log", "changeLog", "events", "screens", "items"):
+        for source in (meta, result):
+            value = source.get(key)
+
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+
+    return []
+
+
+def _claims_complete(result: JsonObject) -> bool:
+    """Did the surface claim this answer covers everything?
+
+    **Complete unless it says otherwise.** The opposite default would mark every
+    existing surface's answers partial for having never heard of the flag, which
+    is a warning nobody can act on and everybody learns to skip.
+    """
+    meta = result.get("_meta")
+    meta = meta if isinstance(meta, dict) else {}
+
+    for key in ("complete", "is_complete", "isComplete"):
+        for source in (meta, result):
+            if key in source:
+                return bool(source[key])
+
+    for key in ("partial", "is_partial", "isPartial", "truncated"):
+        for source in (meta, result):
+            if key in source:
+                return not bool(source[key])
+
+    return True
 
 
 # -- the manager -------------------------------------------------------------
@@ -633,11 +1378,16 @@ class HumanPlusManager:
         store: AttachmentStore,
         trust: TrustPolicy,
         guard: ResultGuard | None = None,
+        require_revision: bool = False,
     ) -> None:
         self._transport = transport
         self._store = store
         self._trust = trust
         self._guard = guard if guard is not None else ResultGuard()
+        # Refuse to call a surface that has answered and minted no revision.
+        # Off by default, because a surface with one writer is not in danger and
+        # refusing it would be this package's opinion rather than a protection.
+        self._require_revision = require_revision
         self._client = LegacyMcpClient(transport)
 
     def attach(
@@ -664,6 +1414,123 @@ class HumanPlusManager:
 
         return self._store.lock(id, lambda: self._discover(self._required(owner, id)))
 
+    def conflict_detection(self, owner: Owner, id: str) -> ConflictDetection:
+        """How much lost-update protection this surface has been OBSERVED to have.
+
+        A check rather than a claim. Read :class:`ConflictDetection` before
+        acting on it: the state that matters most is MINTED, which means this
+        package is pinning every call and **cannot see whether the surface
+        enforces the pin**.
+        """
+        return self._store.lock(id, lambda: self._required(owner, id).conflict_detection)
+
+    def changes_since(self, owner: Owner, id: str) -> SurfaceChanges:
+        """What changed on this surface since the marker the agent last saw.
+
+        :class:`SurfaceRevision` stops an agent overwriting a change it did not
+        know about. It does NOTHING about an agent that re-reads, sees current
+        state, decides the surface has drifted from what it intended, and puts
+        it back — over a person's edit, with nothing stale anywhere and no error
+        at any layer. Optimistic concurrency answers "did the world move under
+        me"; this answers "what did somebody else do", which is the question
+        that stops the revert.
+
+        **Read :meth:`SurfaceChanges.answered` before reading the list.** A
+        surface with no feed and a surface with nothing to report produce the
+        same empty list.
+        """
+
+        def run() -> SurfaceChanges:
+            self._trust.assert_declared()
+            attachment = self._required(owner, id)
+            feed_tool = next(
+                (
+                    found
+                    for found in self._discover(attachment)
+                    if found.name.lower() in _CHANGE_FEED_TOOLS
+                ),
+                None,
+            )
+
+            if feed_tool is None:
+                # Recorded, not just returned. A later turn should not have to
+                # re-derive that this surface cannot answer, and an operator
+                # should be able to see it on the attachment.
+                nxt = attachment.observing_change_feed(False)
+
+                if nxt != attachment:
+                    self._store.put(nxt, attachment.generation)
+
+                return SurfaceChanges.unavailable()
+
+            attachment = attachment.observing_change_feed(True)
+            pinned = attachment.revision
+
+            try:
+                result = self._client.call(
+                    attachment,
+                    feed_tool.name,
+                    {} if pinned is None else {"since": pinned.token},
+                    pinned,
+                )
+            except SurfaceRevisionRejected:
+                # The READ was refused for carrying a stale marker. Drop it and
+                # say the question went unanswered, exactly as `call()` does.
+                self._store.put(attachment.observing_enforcement(), attachment.generation)
+
+                raise SurfaceChangedUnderYou.during(feed_tool.name, pinned) from None
+            except (SurfaceUnavailable, AttachmentUnauthorized) as failure:
+                self._record_terminal(attachment, failure)
+                raise
+
+            changes: list[SurfaceChange] = []
+            attributed = False
+
+            for row in _change_rows(result):
+                change = SurfaceChange.from_row(row)
+
+                if change is None:
+                    continue
+
+                changes.append(
+                    change
+                    if change.label == ""
+                    else replace(
+                        change,
+                        # The surface's own words, guarded like any other text
+                        # coming back from a running application.
+                        label=self._guard.guard(
+                            attachment.invitation.surface_id, feed_tool.name, change.label
+                        ),
+                    )
+                )
+
+                # Proof arrives only when the surface names a hand that is NOT
+                # this agent's. A feed that can only ever say "agent" has not
+                # shown it can tell a person's edit from its own. Evidence when
+                # it arrives, never a precondition — the same rule as ENFORCED.
+                if change.actor in (ChangeActor.HUMAN, ChangeActor.OTHER):
+                    attributed = True
+
+            observed = SurfaceRevision.from_result(result, feed_tool.name)
+
+            if observed is not None:
+                attachment = attachment.with_revision(observed)
+
+            if attributed:
+                attachment = attachment.observing_attribution()
+
+            self._store.put(attachment, attachment.generation)
+
+            return SurfaceChanges(
+                attachment.change_feed,
+                tuple(changes),
+                attachment.revision,
+                _claims_complete(result),
+            )
+
+        return self._store.lock(id, run)
+
     def call(self, owner: Owner, id: str, tool: str, arguments: JsonObject | None = None) -> str:
         def run() -> str:
             self._trust.assert_declared()
@@ -675,11 +1542,43 @@ class HumanPlusManager:
             if definition is None:
                 raise ToolRefused(f"Human+ tool [{tool}] is not trusted or was not offered.")
 
+            # The first call is always allowed: there is no way to know what a
+            # surface supplies before it has answered once, and refusing it
+            # would refuse the very read that finds out.
+            if self._require_revision and attachment.conflict_detection.is_unprotected():
+                raise ConflictDetectionUnavailable.for_surface(
+                    attachment.invitation.surface_id, tool
+                )
+
+            pinned = attachment.revision
+
             try:
-                result = self._client.call(attachment, tool, arguments or {})
+                result = self._client.call(attachment, tool, arguments or {}, pinned)
+            except SurfaceRevisionRejected:
+                # DROP THE MARKER, then refuse. Without the drop the agent is
+                # stuck: every later call carries the same stale token, and a
+                # surface that gates reads on it refuses the read that would
+                # refresh.
+                #
+                # The attachment is NOT transitioned: a conflict is a normal
+                # outcome of two writers, not a lifecycle failure, and marking
+                # the surface unavailable would end a session that is healthy.
+                self._store.put(attachment.observing_enforcement(), attachment.generation)
+
+                raise SurfaceChangedUnderYou.during(tool, pinned) from None
             except (SurfaceUnavailable, AttachmentUnauthorized) as failure:
                 self._record_terminal(attachment, failure)
                 raise
+
+            observed = SurfaceRevision.from_result(result, tool)
+            nxt = (
+                attachment.observing_no_revision()
+                if observed is None
+                else attachment.with_revision(observed)
+            )
+
+            if nxt != attachment:
+                self._store.put(nxt, attachment.generation)
 
             text = _text_of(result.get("content"))
 
