@@ -43,6 +43,49 @@ creates the project on the first successful upload.
    The workflow publishes to PyPI, creates the GitHub release from the tag's
    message, then checks that PyPI serves the version.
 
+   **Every annotation must declare its breaking status**, and the release
+   refuses one that does not. Write one of these two lines, whichever is true:
+
+   ```
+   BREAKING CHANGE: <what breaks, and what the consumer must do about it>
+   ```
+
+   ```
+   No breaking changes.
+   ```
+
+   A `## Breaking changes` heading with content under it also satisfies the
+   check, but **only if you tag with `--cleanup=verbatim` or `-F`**. Under git's
+   default cleanup every `#` line in a tag message is treated as a comment and
+   **deleted**, so `git tag -a -m '## Breaking changes …'` publishes an
+   annotation with the heading silently missing. The two forms above carry no
+   `#` to lose, which is why they come first.
+
+   This was asked for in prose before this check existed, and asking did not
+   work: of the twenty most recent annotations across ten of these repositories,
+   EIGHTEEN never used the word "breaking" at all. One shipped a mandatory
+   migration, a changed scope-matching rule and a raised framework floor under
+   headings that described each change accurately and labelled none of them
+   breaking. A consumer scanning that release page for the word found nothing.
+
+   Prose mentioning "breaking" does not satisfy the check — it matches the
+   structural form, so a note that merely discusses breakage still has to say
+   which it is. Anyone holding a pinned digest or matching on an error code
+   learns it here or not at all.
+
+   The guard runs **before** the upload, so a missing declaration refuses the
+   publish rather than merely withholding the release page. You can see the same
+   verdict locally before tagging:
+
+   ```
+   sh tools/check-release-notes.sh --tag v0.2.0
+   ```
+
+   Use `--tag`, not a pipe from `git tag -l --format='%(contents)'`: on a
+   lightweight tag that format yields the *commit* message instead, so the check
+   would read text the release will never publish and approve it. `--tag`
+   refuses that case by name.
+
 The tag must equal the declared version with a leading `v`. `v0.2.0` against a
 `pyproject.toml` that says `0.1.0` is refused before anything is built.
 
