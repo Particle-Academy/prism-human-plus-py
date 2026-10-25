@@ -887,3 +887,40 @@ def test_the_stream_seam_accepts_any_iterable() -> None:
     )
 
     assert result["result"] == {"ok": True}
+
+
+# G-130. A surface chooses its tool names, and the well-formed name check
+# admits `.`, `:` and `-` -- so reserving the verb only behind `_` handed the
+# confirmation tool to the agent whenever the surface spelled it differently.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "terminal.confirm",
+        "sheet:approve",
+        "edit-deny",
+        "confirm_edit",
+        "vendor.deny.all",
+        "Terminal.Confirm",
+        "edit__-accept",
+        "sheetConfirm",
+        "SheetApprove",
+        "rejectChange",
+        "v2Reject",
+        "DENY",
+        "terminal_confirm",
+    ],
+)
+def test_reserves_a_confirmation_verb_behind_any_separator_and_in_camel_case(name: str) -> None:
+    policy = TrustPolicy.every_tool()
+
+    assert policy.allows(name) is False
+    with pytest.raises(ToolRefused, match="reserved for the human confirmation surface"):
+        policy.assert_allows(ToolDefinition(name, "x", {}))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["send_confirmation_email", "denylist", "sheet_write", "vendor.tool", "acceptance.report"],
+)
+def test_reserves_only_the_whole_word(name: str) -> None:
+    assert TrustPolicy.every_tool().allows(name) is True

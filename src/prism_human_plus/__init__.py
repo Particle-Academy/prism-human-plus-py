@@ -962,7 +962,10 @@ def _sort_deep(value: Any) -> Any:
 
 # -- local trust -------------------------------------------------------------
 
-_HUMAN_ONLY = re.compile(r"(?:^|_)(?:confirm|reject|accept|approve|deny)$", re.IGNORECASE)
+#: Verbs whose tools belong to the human confirmation surface (see _is_human_only).
+_RESERVED_VERBS = frozenset({"confirm", "reject", "accept", "approve", "deny"})
+_SEPARATORS = re.compile(r"[_.:\-]+")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 #: Characters that are INVISIBLE at the end of a tool name.
 #:
@@ -1028,7 +1031,21 @@ def _is_human_only(name: str) -> bool:
     that was previously callable, and can never un-reserve one. The allowlist is
     matched against the RAW name and is deliberately untouched.
     """
-    return _HUMAN_ONLY.search(_INVISIBLE.sub("", name)) is not None
+    # TOKENISED, not an end-anchored pattern (G-130). The well-formed check
+    # admits `.`, `:` and `-` as well as `_`, and a surface chooses its own
+    # names, so reserving the verb only behind `_` handed `terminal.confirm`,
+    # `sheet:approve`, `confirm_edit` and `sheetConfirm` to the agent. Every
+    # separator and every camelCase boundary splits a token; the name is
+    # reserved when ANY token is a reserved verb. Whole tokens only, so
+    # `send_confirmation_email` and `denylist` stay callable. Spelled the same
+    # way in all three languages, and like the normalisation it can only
+    # reserve more.
+    normalised = _INVISIBLE.sub("", name)
+    return any(
+        token.lower() in _RESERVED_VERBS
+        for segment in _SEPARATORS.split(normalised)
+        for token in _CAMEL_BOUNDARY.split(segment)
+    )
 
 
 class TrustPolicy:
