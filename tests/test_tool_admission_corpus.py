@@ -78,7 +78,7 @@ def case_of(case_id: str) -> dict[str, Any]:
 
 
 def test_is_the_whole_suite_not_a_subset_someone_trimmed_to_green() -> None:
-    assert len(CORPUS["cases"]) == 32
+    assert len(CORPUS["cases"]) == 45
 
 
 def test_decides_every_case_the_way_the_corpus_recorded() -> None:
