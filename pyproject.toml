@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prism-ai-human-plus"
-version = "0.1.0"
+version = "0.2.0"
 description = "Humans and agents sharing one surface, across a trust boundary. Python."
 readme = "README.md"
 license = "MIT"
