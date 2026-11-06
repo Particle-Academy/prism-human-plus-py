@@ -1281,7 +1281,7 @@ class LegacyMcpClient:
             {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "prism-human-plus", "version": "0.1.0"},
+                "clientInfo": {"name": "prism-human-plus", "version": "0.3.0"},
             },
         )
         version = response.get("protocolVersion")
