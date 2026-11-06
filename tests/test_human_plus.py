@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import socket
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -643,6 +644,14 @@ def a_relay_attachment(**overrides: Any) -> SurfaceAttachment:
     )
 
 
+@pytest.fixture(autouse=True)
+def public_fixture_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    def lookup(*args: Any, **kwargs: Any) -> Any:
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+
+
 def a_transport(http: FakeHttp, **overrides: Any) -> SsePostRelayTransport:
     defaults: dict[str, Any] = {
         "allowed_relay_hosts": ["relay.example.com"],
@@ -802,12 +811,12 @@ def test_maps_410_to_gone_and_401_to_unauthorized_and_never_confuses_them() -> N
         a_transport(http).notify(a_relay_attachment(), {})
 
 
-def test_reads_session_gone_out_of_the_body_even_on_a_non_410_status() -> None:
+def test_keeps_http_failure_category_despite_a_session_gone_body() -> None:
     http = FakeHttp()
     http.post_status = 400
     http.post_body = '{"error":"session_gone"}'
 
-    with pytest.raises(SurfaceUnavailable):
+    with pytest.raises(HumanPlusError, match="Fancy relay failed with HTTP 400"):
         a_transport(http).notify(a_relay_attachment(), {})
 
 

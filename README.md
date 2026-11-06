@@ -117,8 +117,13 @@ server-sent-events stream.
 - It refuses to run without an `egress_proxy` unless you pass
   `allow_unverified_egress=True`, which is for isolated local testing only.
 - Declaring `egress_proxy` does not route traffic by itself. Your `RelayHttp`
-  must send its requests through it. Host names are not resolved here, so the
-  proxy is what stops a public name that resolves to a private address.
+  must send its requests through it. Each HTTP leg first checks all local DNS
+  answers and refuses empty, failed, mixed, private, or reserved results. This
+  preflight does not pin the HTTP client's later connection; the trusted proxy
+  remains required. Explicit isolated unverified mode retains its DNS bypass.
+- HTTP 401 raises `AttachmentUnauthorized`, 409 raises
+  `SurfaceRevisionRejected`, and 410 raises `SurfaceUnavailable`. A detach on
+  410 succeeds. Response body text does not change the HTTP failure category.
 - A frame over `max_frame_bytes` (262,144 by default) is refused.
 
 ## Two writers, and what changed since my last turn
