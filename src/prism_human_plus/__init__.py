@@ -10,12 +10,15 @@ import json as _json
 import math
 import re
 import secrets
+import socket
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Protocol, TypeVar
 from urllib.parse import quote, urlencode, urlsplit
+
+from ._relay_address_policy import is_non_public_address
 
 __all__ = [
     "MCP_PROTOCOL_VERSION",
@@ -1950,8 +1953,9 @@ class SsePostRelayTransport:
         )
         self._assert_live(post.status, post.body)
 
+        get_base = self._base(attachment)
         stream = self._http.stream(
-            f"{base}/events?{self._query(attachment, {'direction': 'outbound'})}",
+            f"{get_base}/events?{self._query(attachment, {'direction': 'outbound'})}",
             self._headers(attachment, {"Accept": "text/event-stream", "Cache-Control": "no-cache"}),
         )
         self._assert_live(stream.status, "")
@@ -2040,7 +2044,7 @@ class SsePostRelayTransport:
             )
 
         if not insecure_loopback:
-            _assert_public_host(host)
+            _assert_public_host(host, self._allow_unverified_egress)
 
         return f"{url}/{quote(attachment.invitation.session_id, safe='')}"
 
@@ -2071,7 +2075,7 @@ class SsePostRelayTransport:
         if 200 <= status < 300:
             return
 
-        if status == 410 or "session_gone" in body:
+        if status == 410:
             if detaching:
                 return
 
@@ -2080,33 +2084,34 @@ class SsePostRelayTransport:
         if status == 401:
             raise AttachmentUnauthorized("The Fancy surface attachment is unauthorized.")
 
+        if status == 409:
+            raise SurfaceRevisionRejected(
+                "The Fancy relay rejected the revision this call was pinned to."
+            )
+
         raise HumanPlusError(f"Fancy relay failed with HTTP {status}.")
 
 
-def _assert_public_host(host: str) -> None:
-    """A LITERAL private address is refused outright.
-
-    A NAME is not resolved here, and the reference's DNS check is deliberately
-    not carried over: a lookup in the client is not a rebinding boundary -- the
-    address the HTTP client eventually connects to can differ from the one this
-    saw. The egress proxy is the boundary, which is why it is required by
-    default and why turning it off is spelled ``allow_unverified_egress``.
-    """
+def _assert_public_host(host: str, allow_unverified_egress: bool = False) -> None:
+    """Local preflight complements the trusted proxy; it cannot pin the connection."""
     bare = host[1:-1] if host.startswith("[") and host.endswith("]") else host
-
     try:
-        address = ipaddress.ip_address(bare)
+        ipaddress.ip_address(bare)
     except ValueError:
+        if allow_unverified_egress:
+            return
+        try:
+            records = socket.getaddrinfo(
+                bare, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+            )
+        except OSError:
+            raise AttachmentUnauthorized(
+                "Human+ relay host did not resolve to a public address."
+            ) from None
+        if not records or any(is_non_public_address(str(record[4][0])) for record in records):
+            raise AttachmentUnauthorized("Human+ relay resolved to a private or reserved address.")
         return
-
-    if (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_unspecified
-        or address.is_reserved
-        or address.is_multicast
-    ):
+    if is_non_public_address(bare):
         raise AttachmentUnauthorized("Human+ relay resolved to a private or reserved address.")
 
 
